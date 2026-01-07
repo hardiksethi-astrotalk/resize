@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { UploadZone } from './components/UploadZone';
 import { ColorPicker } from './components/ColorPicker';
 import { ResultCard } from './components/ResultCard';

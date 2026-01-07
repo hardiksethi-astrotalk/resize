@@ -21,7 +21,7 @@ export async function loadFFmpeg(): Promise<FFmpeg> {
             console.log('[FFmpeg]', message);
         });
 
-        instance.on('progress', ({ progress, time }) => {
+        instance.on('progress', ({ progress }) => {
             console.log(`[FFmpeg] Progress: ${progress * 100}%`);
         });
 

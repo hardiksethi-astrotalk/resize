@@ -1,6 +1,5 @@
 import React, { useCallback, useState } from 'react';
 import { Upload, FileVideo, FileImage } from 'lucide-react';
-import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 interface UploadZoneProps {
