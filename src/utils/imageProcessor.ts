@@ -2,7 +2,10 @@ export async function processImage(
     file: File,
     targetWidth: number,
     targetHeight: number,
-    backgroundColor: string
+    backgroundColor: string,
+    userScale: number = 1,
+    panX: number = 0,
+    panY: number = 0
 ): Promise<string> {
     return new Promise((resolve, reject) => {
         const img = new Image();
@@ -25,15 +28,21 @@ export async function processImage(
             ctx.fillRect(0, 0, targetWidth, targetHeight);
 
             // Calculate scale and position to fit image
-            const scale = Math.min(
+            const baseScale = Math.min(
                 targetWidth / img.width,
                 targetHeight / img.height
             );
 
-            const drawWidth = img.width * scale;
-            const drawHeight = img.height * scale;
-            const x = (targetWidth - drawWidth) / 2;
-            const y = (targetHeight - drawHeight) / 2;
+            // Apply user adjustments
+            const finalScale = baseScale * userScale;
+
+            const drawWidth = img.width * finalScale;
+            const drawHeight = img.height * finalScale;
+
+            // Base centered position + Pan offset
+            // Pan is percentage of target, so we shift by targetWidth * panX
+            const x = (targetWidth - drawWidth) / 2 + (targetWidth * panX);
+            const y = (targetHeight - drawHeight) / 2 + (targetHeight * panY);
 
             ctx.drawImage(img, x, y, drawWidth, drawHeight);
 

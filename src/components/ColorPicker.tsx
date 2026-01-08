@@ -46,7 +46,22 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({ color, onChange, disab
                         disabled={disabled}
                         className="w-8 h-8 rounded cursor-pointer bg-transparent border-0 p-0"
                     />
-                    <span className="text-sm font-mono text-slate-400 uppercase">{color}</span>
+                    <div className="relative">
+                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 text-sm font-mono">#</span>
+                        <input
+                            type="text"
+                            value={color.replace('#', '')}
+                            onChange={(e) => {
+                                const val = e.target.value;
+                                // Allow mostly valid hex chars
+                                if (/^[0-9A-Fa-f]*$/.test(val) && val.length <= 6) {
+                                    onChange(`#${val}`);
+                                }
+                            }}
+                            className="bg-slate-800 border-slate-600 rounded-md py-1 pl-6 pr-2 text-sm font-mono w-24 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none uppercase"
+                            disabled={disabled}
+                        />
+                    </div>
                 </div>
             </div>
         </div>

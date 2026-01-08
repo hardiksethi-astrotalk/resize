@@ -48,63 +48,158 @@ export async function processVideo(
     file: File,
     targetWidth: number,
     targetHeight: number,
-    backgroundColor: string
+    backgroundColor: string,
+    userScale: number = 1,
+    panX: number = 0,
+    panY: number = 0
 ): Promise<string> {
+    // 1. Get exact input dimensions (using DOM video element)
+    const dims = await getVideoDimensions(file);
+    const iw = dims.width;
+    const ih = dims.height;
+
+    // 2. Load FFmpeg
     const instance = await loadFFmpeg();
 
     const inputName = 'input.mp4';
     const outputName = 'output.mp4';
 
-    // Write file to in-memory FS
+    // 3. Write input file
     await instance.writeFile(inputName, await fetchFile(file));
 
-    // Ensure even dimensions for libx264
-    const w = targetWidth % 2 !== 0 ? targetWidth - 1 : targetWidth;
-    const h = targetHeight % 2 !== 0 ? targetHeight - 1 : targetHeight;
+    // 4. Calculate Dimensions & Filters
+    // Ensure even target dimensions for libx264 (macroblock requirement)
+    // We force the container to be even.
+    const padW = targetWidth % 2 !== 0 ? targetWidth - 1 : targetWidth;
+    const padH = targetHeight % 2 !== 0 ? targetHeight - 1 : targetHeight;
 
-    // Construct filter string
+    // Scale calculation:
+    // "Contain" logic: min(scaleX, scaleY)
+    const scaleFactor = Math.min(padW / iw, padH / ih) * userScale;
+
+    // New dimensions for the scaled video
+    let newW = Math.round(iw * scaleFactor);
+    let newH = Math.round(ih * scaleFactor);
+
+    // Ensure scaled dimensions are even
+    if (newW % 2 !== 0) newW -= 1;
+    if (newH % 2 !== 0) newH -= 1;
+
+    // Safety check for 0 dimensions (shouldn't happen with reasonable scale, but safe is good)
+    newW = Math.max(2, newW);
+    newH = Math.max(2, newH);
+
+    // Calculate Padding/Positioning for "Canvas" logic
+    // We want the image at (xPos, yPos) relative to the top-left of the target canvas.
+    const xPos = (padW - newW) / 2 + (padW * panX);
+    const yPos = (padH - newH) / 2 + (padH * panY);
+
+    // Filter Logic:
+    // 1. Scale
+    // 2. Pad to a "Super Canvas" that is large enough to hold the image at its positive positions.
+    // 3. Crop to the actual target window.
+
+    // Pad dimensions: Must hold the image even if it's larger than target.
+    const superW = Math.max(padW, newW);
+    const superH = Math.max(padH, newH);
+
+    // Pad positions:
+    // If xPos > 0, we place image at xPos.
+    // If xPos < 0, we place image at 0 (and will crop the left side later).
+    const padX = Math.max(0, xPos);
+    const padY = Math.max(0, yPos);
+
+    // Crop positions:
+    // If xPos < 0, it means the content is shifted left, so we crop from `abs(xPos)`.
+    // If xPos > 0, we are just looking at 0 offset of the padded canvas (which has bg at 0..xPos).
+    const cropX = Math.max(0, -xPos);
+    const cropY = Math.max(0, -yPos);
+
+    // Convert hex color (#RRGGBB) to (0xRRGGBB) for FFmpeg safety
+    const safeColor = backgroundColor.startsWith('#')
+        ? backgroundColor.replace('#', '0x')
+        : backgroundColor;
+
+    // Construct robust filter chain
     const filter = [
-        `scale=${w}:${h}:force_original_aspect_ratio=decrease`,
-        `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=${backgroundColor}`
+        `scale=w=${newW}:h=${newH}:flags=lanczos`,
+        `setsar=1`,
+        // Pad to intermediate super canvas
+        `pad=w=${superW}:h=${superH}:x=${padX.toFixed(2)}:y=${padY.toFixed(2)}:color=${safeColor}`,
+        // Crop to final target dimensions
+        `crop=w=${padW}:h=${padH}:x=${cropX.toFixed(2)}:y=${cropY.toFixed(2)}`
     ].join(',');
 
-    console.log('[VideoProcessor] Starting processing with filter:', filter);
+    console.log('[VideoProcessor] Dimensions:', { iw, ih, padW, padH, newW, newH, xPos, yPos });
+    console.log('[VideoProcessor] Super/Crop:', { superW, superH, padX, padY, cropX, cropY });
+    console.log('[VideoProcessor] Filter:', filter);
 
-    // Run FFmpeg command
+    // 5. Execute FFmpeg
     try {
-        // Cleanup previous runs just in case
+        // Cleanup outputs
         try { await instance.deleteFile(outputName); } catch { }
 
-        await instance.exec([
-            '-i', inputName,
-            '-vf', filter,
-            '-c:v', 'libx264', // Re-encode video
-            '-preset', 'ultrafast', // Speed over compression
-            '-c:a', 'copy', // Copy audio
-            outputName
+        const exitCode = await instance.exec([
+            '-v', 'error',         // Reduce logging noise (verbose caused spam)
+            '-i', inputName,       // Input
+            '-vf', filter,         // Video Filter Chain
+            '-map', '0:v',         // Map First Video Stream
+            '-map', '0:a?',        // Map First Audio Stream (Optional if exists)
+            '-c:v', 'libx264',     // Encode Video H.264
+            '-pix_fmt', 'yuv420p', // Pixel Format for Player Compatibility
+            '-preset', 'ultrafast',// Fast encoding
+            '-c:a', 'aac',         // Encode Audio AAC (Safe container format)
+            outputName             // Output
         ]);
+
+        if (exitCode !== 0) {
+            throw new Error(`FFmpeg exited with non-zero code: ${exitCode}`);
+        }
     } catch (err) {
-        console.error('[VideoProcessor] FFmpeg exec failed:', err);
-        throw new Error('Video encoding failed');
+        console.error('[VideoProcessor] Execution Error:', err);
+        throw new Error('Video encoding failed. See console logs for details.');
     }
 
-    // Read the result
+    // 6. Read and Return Output
     try {
         const data = await instance.readFile(outputName) as any;
+
+        if (!data || data.length === 0) {
+            throw new Error('Output file is empty (0 bytes)');
+        }
+
+        console.log(`[VideoProcessor] Success! Output size: ${data.length} bytes`);
+
         const blob = new Blob([data], { type: 'video/mp4' });
         return URL.createObjectURL(blob);
     } catch (err) {
-        console.error('[VideoProcessor] Could not read output file:', err);
-        throw new Error('Failed to generate output video');
+        throw new Error('Failed to read output video: ' + (err instanceof Error ? err.message : String(err)));
     } finally {
+        // Cleanup memory
         try {
             await instance.deleteFile(inputName);
             await instance.deleteFile(outputName);
-        } catch (e) { /* ignore cleanup errors */ }
+        } catch { }
     }
 }
 
-// Helper to fetch file data
+// Helper: Fetch file to Uint8Array
 async function fetchFile(file: File): Promise<Uint8Array> {
     return new Uint8Array(await file.arrayBuffer());
+}
+
+// Helper: Get Video Dimensions via DOM
+function getVideoDimensions(file: File): Promise<{ width: number; height: number }> {
+    return new Promise((resolve, reject) => {
+        const video = document.createElement('video');
+        video.preload = 'metadata';
+        video.onloadedmetadata = () => {
+            resolve({ width: video.videoWidth, height: video.videoHeight });
+            URL.revokeObjectURL(video.src);
+        };
+        video.onerror = () => {
+            reject(new Error("Failed to load video metadata. File may be corrupted or format unsupported."));
+        };
+        video.src = URL.createObjectURL(file);
+    });
 }

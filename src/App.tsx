@@ -1,83 +1,130 @@
 import { useState } from 'react';
 import { UploadZone } from './components/UploadZone';
 import { ColorPicker } from './components/ColorPicker';
-import { ResultCard } from './components/ResultCard';
-import { RESIZE_CONFIGS, ProcessedMedia } from './utils/types';
+import { MediaPreview } from './components/MediaPreview';
+import { RESIZE_CONFIGS, ResizeConfig } from './utils/types';
 import { processImage } from './utils/imageProcessor';
 import { processVideo } from './utils/videoProcessor';
-import { Layers } from 'lucide-react';
+import { Layers, Download, Loader2, RefreshCcw, LayoutTemplate } from 'lucide-react';
 
 function App() {
     const [file, setFile] = useState<File | null>(null);
     const [bgColor, setBgColor] = useState('#000000');
-    const [isProcessing, setIsProcessing] = useState(false);
-    const [results, setResults] = useState<Record<string, ProcessedMedia>>({});
+
+    // State to hold transform for each resize config, keyed by label
+    const [transforms, setTransforms] = useState<Record<string, { scale: number; x: number; y: number }>>({});
+
+    // Granular processing state
+    const [processingStates, setProcessingStates] = useState<Record<string, boolean>>({});
+    // Global processing lock for batch operations
+    const [isGlobalProcessing, setIsGlobalProcessing] = useState(false);
+
+    const getTransform = (label: string) => {
+        return transforms[label] || { scale: 1, x: 0, y: 0 };
+    };
+
+    const updateTransform = (label: string, newTransform: { scale: number; x: number; y: number }) => {
+        setTransforms(prev => ({
+            ...prev,
+            [label]: newTransform
+        }));
+    };
 
     const handleFileSelect = (selectedFile: File) => {
         setFile(selectedFile);
-        setResults({}); // Clear previous results
+        // Reset transforms
+        setTransforms({});
     };
 
-    const handleProcess = async () => {
+    // Helper to generate the result URL
+    const generateUrl = async (config: ResizeConfig): Promise<{ url: string, ext: string } | null> => {
+        if (!file) return null;
+
+        const transform = getTransform(config.label);
+        let url = '';
+
+        if (file.type.startsWith('video/')) {
+            url = await processVideo(
+                file,
+                config.width,
+                config.height,
+                bgColor,
+                transform.scale,
+                transform.x,
+                transform.y
+            );
+        } else {
+            url = await processImage(
+                file,
+                config.width,
+                config.height,
+                bgColor,
+                transform.scale,
+                transform.x,
+                transform.y
+            );
+        }
+
+        const ext = file.type.startsWith('video/') ? 'mp4' : 'png';
+        return { url, ext };
+    };
+
+    const handleDownload = async (config: ResizeConfig) => {
         if (!file) return;
 
-        setIsProcessing(true);
-        setResults({});
+        setProcessingStates(prev => ({ ...prev, [config.label]: true }));
 
         try {
-            const isVideo = file.type.startsWith('video/');
-            if (isVideo) {
-                // Serialize video processing
-                for (const config of RESIZE_CONFIGS) {
-                    try {
-                        const url = await processVideo(file, config.width, config.height, bgColor);
-                        const res: ProcessedMedia = {
-                            ...config,
-                            url,
-                            originalName: file.name,
-                            type: 'video'
-                        };
-                        setResults(prev => ({ ...prev, [config.label]: res }));
-                    } catch (error) {
-                        console.error(`Error processing ${config.label}:`, error);
-                    }
-                }
-            } else {
-                // Parallel image processing is fine
-                const promises = RESIZE_CONFIGS.map(async (config) => {
-                    try {
-                        const url = await processImage(file, config.width, config.height, bgColor);
-                        return {
-                            ...config,
-                            url,
-                            originalName: file.name,
-                            type: 'image'
-                        } as ProcessedMedia;
-                    } catch (error) {
-                        console.error(`Error processing ${config.label}:`, error);
-                        return null;
-                    }
-                });
+            const result = await generateUrl(config);
+            if (!result) throw new Error("Generation failed");
 
-                const processedResults = await Promise.all(promises);
-                const resultsMap: Record<string, ProcessedMedia> = {};
-                processedResults.forEach((res) => {
-                    if (res) resultsMap[res.label] = res;
-                });
-                setResults(resultsMap);
+            // Trigger download
+            const link = document.createElement('a');
+            link.href = result.url;
+            link.download = `resized_${config.label.replace(/\s+/g, '_').toLowerCase()}.${result.ext}`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            // Note: We don't revoke immediately to allow browser to handle the download,
+            // but ideally we'd track these and cleanup. 
+            // For this simple app, letting garbage collection handle distinct blob URLs is acceptable 
+            // or we could use a timeout.
+            setTimeout(() => URL.revokeObjectURL(result.url), 60000); // 1 min timeout
+
+        } catch (error: any) {
+            console.error(`Processing failed for ${config.label}:`, error);
+            alert(`Failed to process ${config.label}: ${error.message}`);
+        } finally {
+            setProcessingStates(prev => ({ ...prev, [config.label]: false }));
+        }
+    };
+
+    // Sequential "Download All" - Triggers individual downloads one by one
+    const handleDownloadAll = async () => {
+        if (!file) return;
+        setIsGlobalProcessing(true);
+
+        try {
+            for (const config of RESIZE_CONFIGS) {
+                // We await each download to ensure they don't fight for resources too much
+                // and to give the browser time to initiate the download.
+                await handleDownload(config);
+
+                // Small buffer to ensure browser registers separate downloads
+                await new Promise(resolve => setTimeout(resolve, 1500));
             }
         } catch (error: any) {
-            console.error('Processing failed:', error);
-            const msg = error instanceof Error ? error.message : 'Unknown error';
-            alert(`Processing failed: ${msg}. Check console for details.`);
+            console.error('Batch processing failed:', error);
+            alert(`Batch download stopped: ${error.message}`);
         } finally {
-            setIsProcessing(false);
+            setIsGlobalProcessing(false);
         }
     };
 
     return (
         <div className="min-h-screen bg-slate-900 text-slate-100 p-8">
-            <div className="max-w-6xl mx-auto space-y-8">
+            <div className="max-w-7xl mx-auto space-y-8">
 
                 {/* Header */}
                 <header className="flex items-center gap-3 border-b border-slate-800 pb-6">
@@ -92,23 +139,24 @@ function App() {
                     </div>
                 </header>
 
-                <main className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
 
-                    {/* Left Column: Controls */}
-                    <div className="space-y-6">
-                        <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 space-y-6">
+                    {/* Sidebar: Global Settings */}
+                    <div className="lg:col-span-3 space-y-6">
+                        <div className="bg-slate-800/50 p-6 rounded-2xl border border-slate-700 space-y-6 lg:sticky lg:top-8">
                             <section>
-                                <h2 className="text-lg font-semibold mb-4 text-slate-200">1. Upload Media</h2>
+                                <h2 className="text-lg font-semibold mb-4 text-slate-200">1. Media</h2>
                                 <UploadZone
                                     onFileSelect={handleFileSelect}
-                                    isLoading={isProcessing}
+                                    isLoading={Object.values(processingStates).some(Boolean) || isGlobalProcessing}
                                 />
                                 {file && (
                                     <div className="mt-3 p-3 bg-slate-800 rounded-lg border border-slate-700 flex items-center justify-between">
-                                        <span className="truncate text-sm text-slate-300 max-w-[200px]">{file.name}</span>
+                                        <span className="truncate text-sm text-slate-300 max-w-[150px]">{file.name}</span>
                                         <button
                                             onClick={() => setFile(null)}
                                             className="text-xs text-red-400 hover:text-red-300"
+                                            disabled={isGlobalProcessing}
                                         >
                                             Remove
                                         </button>
@@ -119,41 +167,111 @@ function App() {
                             <hr className="border-slate-700" />
 
                             <section>
-                                <h2 className="text-lg font-semibold mb-4 text-slate-200">2. Background Style</h2>
+                                <h2 className="text-lg font-semibold mb-4 text-slate-200">2. Background</h2>
                                 <ColorPicker
                                     color={bgColor}
                                     onChange={setBgColor}
-                                    disabled={isProcessing}
+                                    disabled={Object.values(processingStates).some(Boolean) || isGlobalProcessing}
                                 />
                             </section>
-
-                            <button
-                                onClick={handleProcess}
-                                disabled={!file || isProcessing}
-                                className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:from-slate-700 disabled:to-slate-700 disabled:text-slate-500 rounded-xl font-bold text-lg shadow-lg hover:shadow-blue-900/20 transition-all active:scale-[0.98]"
-                            >
-                                {isProcessing ? 'Processing...' : 'Generate Resizes'}
-                            </button>
                         </div>
                     </div>
 
-                    {/* Right Column: Results */}
-                    <div className="lg:col-span-2 space-y-6">
-                        <h2 className="text-xl font-semibold text-slate-200">3. Download Results</h2>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 h-[calc(100%-3rem)]">
-                            {RESIZE_CONFIGS.map((config) => (
-                                <div key={config.label} className="min-h-[300px]">
-                                    <ResultCard
-                                        label={config.label}
-                                        width={config.width}
-                                        height={config.height}
-                                        result={results[config.label]}
-                                        isLoading={isProcessing}
-                                    />
-                                </div>
-                            ))}
+                    {/* Main Area: Interactive Cards */}
+                    <div className="lg:col-span-9 space-y-6">
+                        <div className="flex justify-between items-center">
+                            <h2 className="text-xl font-semibold text-slate-200">3. Edit & Export</h2>
+                            {file && (
+                                <button
+                                    onClick={handleDownloadAll}
+                                    disabled={isGlobalProcessing || Object.values(processingStates).some(Boolean)}
+                                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg font-medium transition-all shadow-lg shadow-emerald-900/20 active:scale-[0.98] text-sm"
+                                >
+                                    {isGlobalProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <LayoutTemplate className="w-4 h-4" />}
+                                    Download All
+                                </button>
+                            )}
                         </div>
+
+                        {file ? (
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                                {RESIZE_CONFIGS.map((config) => {
+                                    const transform = getTransform(config.label);
+                                    const isProcessing = processingStates[config.label];
+
+                                    return (
+                                        <div key={config.label} className="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden flex flex-col shadow-xl">
+                                            {/* Card Header */}
+                                            <div className="p-4 border-b border-slate-700 flex justify-between items-center bg-slate-800/50">
+                                                <div className="flex items-center gap-2">
+                                                    <div className="w-2 h-8 bg-blue-500 rounded-full"></div>
+                                                    <div>
+                                                        <h3 className="font-semibold text-slate-200">{config.label}</h3>
+                                                        <p className="text-xs text-slate-400">{config.width} x {config.height}</p>
+                                                    </div>
+                                                </div>
+                                                <button
+                                                    onClick={() => updateTransform(config.label, { scale: 1, x: 0, y: 0 })}
+                                                    className="p-2 hover:bg-slate-700 rounded-full text-slate-400 hover:text-white transition-colors"
+                                                    title="Reset transform"
+                                                >
+                                                    <RefreshCcw className="w-4 h-4" />
+                                                </button>
+                                            </div>
+
+                                            {/* Preview Area */}
+                                            <div className="p-4 flex-1 bg-slate-900/50 flex flex-col items-center justify-center min-h-[300px]">
+                                                <div className="w-full max-w-[280px]">
+                                                    <MediaPreview
+                                                        file={file}
+                                                        transform={transform}
+                                                        onTransformChange={(t) => updateTransform(config.label, t)}
+                                                        backgroundColor={bgColor}
+                                                        aspectRatio={config.width / config.height}
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            {/* Footer / Controls */}
+                                            <div className="p-4 border-t border-slate-700 bg-slate-800/50 space-y-3">
+                                                <div className="flex justify-between text-xs text-slate-500 font-mono">
+                                                    <span>Scale: {transform.scale.toFixed(2)}x</span>
+                                                    <span>Pan: {transform.x.toFixed(2)}, {transform.y.toFixed(2)}</span>
+                                                </div>
+
+                                                <button
+                                                    onClick={() => handleDownload(config)}
+                                                    disabled={isProcessing || isGlobalProcessing}
+                                                    className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-xl font-medium transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-900/20 active:scale-[0.98]"
+                                                >
+                                                    {isProcessing ? (
+                                                        <>
+                                                            <Loader2 className="w-5 h-5 animate-spin" />
+                                                            <span>Processing...</span>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <Download className="w-5 h-5" />
+                                                            <span>Download</span>
+                                                        </>
+                                                    )}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : (
+                            <div className="h-96 border-2 border-dashed border-slate-700 rounded-3xl flex flex-col items-center justify-center text-slate-500 bg-slate-800/20 gap-4">
+                                <div className="p-4 bg-slate-800 rounded-full">
+                                    <Layers className="w-8 h-8 opacity-50" />
+                                </div>
+                                <div className="text-center">
+                                    <h3 className="text-lg font-medium text-slate-300">No Media Selected</h3>
+                                    <p className="text-sm">Upload a photo or video to start editing</p>
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                 </main>
