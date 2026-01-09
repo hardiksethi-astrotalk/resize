@@ -22,8 +22,8 @@ export async function loadFFmpeg(): Promise<FFmpeg> {
         });
 
         // Global progress logging (optional, can be removed if too noisy)
-        instance.on('progress', ({ progress }) => {
-            // console.log(`[FFmpeg] Global Progress: ${progress * 100}%`);
+        instance.on('progress', ({ progress: _progress }) => {
+            // console.log(`[FFmpeg] Global Progress: ${_progress * 100}%`);
         });
 
         const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
