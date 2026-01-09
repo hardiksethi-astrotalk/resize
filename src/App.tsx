@@ -10,6 +10,7 @@ import { Layers, Download, Loader2, RefreshCcw, LayoutTemplate } from 'lucide-re
 function App() {
     const [file, setFile] = useState<File | null>(null);
     const [bgColor, setBgColor] = useState('#000000');
+    const [customFilename, setCustomFilename] = useState('');
 
     // State to hold transform for each resize config, keyed by label
     const [transforms, setTransforms] = useState<Record<string, { scale: number; x: number; y: number }>>({});
@@ -36,6 +37,9 @@ function App() {
 
     const handleFileSelect = (selectedFile: File) => {
         setFile(selectedFile);
+        // Default filename is the original name without extension
+        const nameWithoutExt = selectedFile.name.substring(0, selectedFile.name.lastIndexOf('.')) || selectedFile.name;
+        setCustomFilename(nameWithoutExt);
         // Reset transforms
         setTransforms({});
         // Reset progress
@@ -90,10 +94,14 @@ function App() {
             });
             if (!result) throw new Error("Generation failed");
 
+            // Extract format suffix (square, landscape, portrait)
+            const suffix = config.label.split(' ')[0].toLowerCase();
+            const finalName = `${customFilename || 'output'}.${suffix}.${result.ext}`;
+
             // Trigger download
             const link = document.createElement('a');
             link.href = result.url;
-            link.download = `resized_${config.label.replace(/\s+/g, '_').toLowerCase()}.${result.ext}`;
+            link.download = finalName;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -163,15 +171,30 @@ function App() {
                                     isLoading={Object.values(processingStates).some(Boolean) || isGlobalProcessing}
                                 />
                                 {file && (
-                                    <div className="mt-3 p-3 bg-slate-800 rounded-lg border border-slate-700 flex items-center justify-between">
-                                        <span className="truncate text-sm text-slate-300 max-w-[150px]">{file.name}</span>
-                                        <button
-                                            onClick={() => setFile(null)}
-                                            className="text-xs text-red-400 hover:text-red-300"
-                                            disabled={isGlobalProcessing}
-                                        >
-                                            Remove
-                                        </button>
+                                    <div className="mt-3 space-y-3">
+                                        <div className="p-3 bg-slate-800 rounded-lg border border-slate-700 flex items-center justify-between">
+                                            <span className="truncate text-sm text-slate-300 max-w-[150px]">{file.name}</span>
+                                            <button
+                                                onClick={() => setFile(null)}
+                                                className="text-xs text-red-400 hover:text-red-300"
+                                                disabled={isGlobalProcessing}
+                                            >
+                                                Remove
+                                            </button>
+                                        </div>
+
+                                        {/* Custom Filename Input */}
+                                        <div>
+                                            <label className="text-xs font-medium text-slate-400 mb-1 block">Output Filename</label>
+                                            <input
+                                                type="text"
+                                                value={customFilename}
+                                                onChange={(e) => setCustomFilename(e.target.value)}
+                                                placeholder="Enter filename"
+                                                disabled={isGlobalProcessing || Object.values(processingStates).some(Boolean)}
+                                                className="w-full bg-slate-800 border-slate-600 rounded-md py-2 px-3 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                                            />
+                                        </div>
                                     </div>
                                 )}
                             </section>
