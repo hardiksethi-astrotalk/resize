@@ -68,7 +68,7 @@ export async function setFilePublic(fileId: string, accessToken: string): Promis
             "Content-Type": "application/json",
         },
         body: JSON.stringify({
-            role: "reader",
+            role: "writer",
             type: "anyone",
         }),
     });
