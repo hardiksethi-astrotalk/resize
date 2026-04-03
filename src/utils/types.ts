@@ -16,7 +16,7 @@ export interface ResizeConfig {
 }
 
 export const RESIZE_CONFIGS: ResizeConfig[] = [
-    { width: 1000, height: 1000, label: 'Square (1:1)' },
-    { width: 1920, height: 1080, label: 'Landscape (16:9)' },
-    { width: 1080, height: 1920, label: 'Portrait (9:16)' },
+    { width: 1200, height: 1200, label: 'Square Size (1:1)' },
+    { width: 2133, height: 1200, label: 'Landscape Size (16:9)' },
+    { width: 1200, height: 2133, label: 'Portrait Size (9:16)' },
 ];
