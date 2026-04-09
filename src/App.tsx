@@ -5,7 +5,8 @@ import { MediaPreview } from './components/MediaPreview';
 import { RESIZE_CONFIGS, ResizeConfig } from './utils/types';
 import { processImage } from './utils/imageProcessor';
 import { processVideo } from './utils/videoProcessor';
-import { Layers, Download, Loader2, RefreshCcw, LayoutTemplate } from 'lucide-react';
+import { getAccessToken, uploadFile, createFolder, setFilePublic } from './utils/googleDrive';
+import { Layers, Download, Loader2, RefreshCcw, LayoutTemplate, UploadCloud, ExternalLink, Copy, Check } from 'lucide-react';
 
 function App() {
     const [file, setFile] = useState<File | null>(null);
@@ -141,6 +142,78 @@ function App() {
             setIsGlobalProcessing(false);
         }
     };
+    // Drive upload state
+    const [isUploading, setIsUploading] = useState(false);
+    const [driveLink, setDriveLink] = useState<string | null>(null);
+    const [isCopied, setIsCopied] = useState(false);
+
+    const handleCopyLink = () => {
+        if (driveLink) {
+            navigator.clipboard.writeText(driveLink);
+            setIsCopied(true);
+            setTimeout(() => setIsCopied(false), 2000);
+        }
+    };
+
+    const handleUploadToDrive = async () => {
+        if (!file) return;
+        setIsUploading(true);
+        setDriveLink(null);
+
+        try {
+            // 1. Get Access Token first to fail early if auth issues
+            const accessToken = await getAccessToken();
+
+            // 2. Create a folder for this batch
+            // Use custom filename as folder name, or file name, or default
+            const folderName = customFilename || (file.name.substring(0, file.name.lastIndexOf('.')) || "output");
+            const { id: folderId, webViewLink } = await createFolder(folderName, accessToken);
+
+            // 3. Set folder to public
+            await setFilePublic(folderId, accessToken);
+            setDriveLink(webViewLink);
+
+            for (const config of RESIZE_CONFIGS) {
+                // Generate the file (or get standard url if already done, but we need blob here)
+                // We'll regenerate/process to get the blob url, then fetch it to get the Blob object
+                // This is a bit redundant if we already have it, but ensures fresh data
+                // For efficiency, we could cache the blob URL and re-use, but let's re-run generation for simplicity of flow
+
+                // Show processing state on the card
+                setProcessingStates(prev => ({ ...prev, [config.label]: true }));
+
+                // Generate (reuses existing logic)
+                const result = await generateUrl(config);
+                if (!result) throw new Error(`Failed to generate ${config.label}`);
+
+                // Fetch the blob from the internal URL
+                const response = await fetch(result.url);
+                const blob = await response.blob();
+
+                // Prepare filename
+                const suffix = config.label.split(' ')[0].toLowerCase();
+                const finalName = `${customFilename || 'output'}.${suffix}.${result.ext}`;
+
+                // Upload
+                await uploadFile(blob, finalName, blob.type, accessToken, folderId);
+
+                // Cleanup
+                setProcessingStates(prev => ({ ...prev, [config.label]: false }));
+                // Revoke url locally
+                URL.revokeObjectURL(result.url);
+            }
+
+            alert("Successfully uploaded! Link is at the top.");
+
+        } catch (error: any) {
+            console.error('Upload failed:', error);
+            alert(`Upload failed: ${error.message}`);
+        } finally {
+            setIsUploading(false);
+            // Reset granular states just in case
+            setProcessingStates({});
+        }
+    };
 
     return (
         <div className="min-h-screen bg-slate-900 text-slate-100 p-8">
@@ -158,6 +231,42 @@ function App() {
                         <p className="text-slate-400">Automation created by Hardik Sethi, Intern, Astrotalk</p>
                     </div>
                 </header>
+
+                {driveLink && (
+                    <div className="bg-emerald-900/30 border border-emerald-500/30 rounded-xl p-4 animate-in fade-in slide-in-from-top-4 space-y-3">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-emerald-500/20 rounded-lg">
+                                <UploadCloud className="w-5 h-5 text-emerald-400" />
+                            </div>
+                            <div>
+                                <h3 className="font-medium text-emerald-200">Upload Complete!</h3>
+                                <p className="text-sm text-emerald-400/80">Your files are ready to share.</p>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 bg-slate-900/50 p-2 rounded-lg border border-emerald-500/20">
+                            <code className="flex-1 text-xs text-emerald-300 truncate font-mono px-2">
+                                {driveLink}
+                            </code>
+                            <button
+                                onClick={handleCopyLink}
+                                className="p-2 hover:bg-emerald-500/20 rounded-md text-emerald-400 transition-colors"
+                                title="Copy Link"
+                            >
+                                {isCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                            </button>
+                            <a
+                                href={driveLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="p-2 hover:bg-emerald-500/20 rounded-md text-emerald-400 transition-colors"
+                                title="Open Link"
+                            >
+                                <ExternalLink className="w-4 h-4" />
+                            </a>
+                        </div>
+                    </div>
+                )}
 
                 <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
 
@@ -212,19 +321,28 @@ function App() {
                         </div>
                     </div>
 
-                    {/* Main Area: Interactive Cards */}
                     <div className="lg:col-span-9 space-y-6">
                         <div className="flex justify-between items-center">
                             <h2 className="text-xl font-semibold text-slate-200">3. Edit & Export</h2>
                             {file && (
-                                <button
-                                    onClick={handleDownloadAll}
-                                    disabled={isGlobalProcessing || Object.values(processingStates).some(Boolean)}
-                                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg font-medium transition-all shadow-lg shadow-emerald-900/20 active:scale-[0.98] text-sm"
-                                >
-                                    {isGlobalProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <LayoutTemplate className="w-4 h-4" />}
-                                    Download All
-                                </button>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={handleDownloadAll}
+                                        disabled={isGlobalProcessing || Object.values(processingStates).some(Boolean)}
+                                        className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg font-medium transition-all shadow-lg shadow-emerald-900/20 active:scale-[0.98] text-sm"
+                                    >
+                                        {isGlobalProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <LayoutTemplate className="w-4 h-4" />}
+                                        Download All
+                                    </button>
+                                    <button
+                                        onClick={handleUploadToDrive}
+                                        disabled={isGlobalProcessing || Object.values(processingStates).some(Boolean) || isUploading}
+                                        className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white rounded-lg font-medium transition-all shadow-lg shadow-indigo-900/20 active:scale-[0.98] text-sm"
+                                    >
+                                        {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}
+                                        Upload to Drive
+                                    </button>
+                                </div>
                             )}
                         </div>
 
